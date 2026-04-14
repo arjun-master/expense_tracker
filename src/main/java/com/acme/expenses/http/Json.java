@@ -4,6 +4,7 @@ import com.acme.expenses.model.Expense;
 import com.acme.expenses.service.ReportSummary;
 
 import java.math.BigDecimal;
+import java.util.ArrayDeque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -13,8 +14,7 @@ public final class Json {
     }
 
     public static Map<String, String> parseObject(String json) {
-        Parser parser = new Parser(json == null ? "" : json);
-        return parser.parseObject();
+        return new Parser(json).parseObject();
     }
 
     public static String expenseList(List<Expense> expenses) {
@@ -108,9 +108,10 @@ public final class Json {
     }
 
     private static String quote(String value) {
+        String text = value == null ? "" : value;
         StringBuilder builder = new StringBuilder("\"");
-        for (int i = 0; i < value.length(); i++) {
-            char character = value.charAt(i);
+        for (int i = 0; i < text.length(); i++) {
+            char character = text.charAt(i);
             switch (character) {
                 case '"' -> builder.append("\\\"");
                 case '\\' -> builder.append("\\\\");
@@ -134,7 +135,7 @@ public final class Json {
         private int position;
 
         private Parser(String text) {
-            this.text = text;
+            this.text = text == null ? "" : text;
         }
 
         private Map<String, String> parseObject() {
@@ -144,9 +145,10 @@ public final class Json {
             skipWhitespace();
             if (peek('}')) {
                 position++;
+                ensureFullyConsumed();
                 return values;
             }
-            while (position < text.length()) {
+            while (true) {
                 String key = parseString();
                 skipWhitespace();
                 expect(':');
@@ -161,31 +163,35 @@ public final class Json {
                 }
                 expect('}');
                 skipWhitespace();
-                if (position != text.length()) {
-                    throw new IllegalArgumentException("Unexpected data after JSON object");
-                }
+                ensureFullyConsumed();
                 return values;
             }
-            throw new IllegalArgumentException("Unterminated JSON object");
         }
 
         private String parseValue() {
             if (peek('"')) {
                 return parseString();
             }
+            if (peek('{') || peek('[')) {
+                return parseStructuredValue();
+            }
+            if (matchLiteral("null")) {
+                return null;
+            }
+            if (matchLiteral("true")) {
+                return "true";
+            }
+            if (matchLiteral("false")) {
+                return "false";
+            }
             int start = position;
-            while (position < text.length()) {
-                char character = text.charAt(position);
-                if (character == ',' || character == '}' || Character.isWhitespace(character)) {
-                    break;
-                }
+            while (position < text.length() && !isValueDelimiter(text.charAt(position))) {
                 position++;
             }
             if (start == position) {
                 throw new IllegalArgumentException("Missing JSON value");
             }
-            String value = text.substring(start, position);
-            return "null".equals(value) ? "" : value;
+            return text.substring(start, position);
         }
 
         private String parseString() {
@@ -218,7 +224,11 @@ public final class Json {
                             throw new IllegalArgumentException("Invalid unicode escape");
                         }
                         String hex = text.substring(position, position + 4);
-                        builder.append((char) Integer.parseInt(hex, 16));
+                        try {
+                            builder.append((char) Integer.parseInt(hex, 16));
+                        } catch (NumberFormatException exception) {
+                            throw new IllegalArgumentException("Invalid unicode escape", exception);
+                        }
                         position += 4;
                     }
                     default -> throw new IllegalArgumentException("Unsupported JSON escape");
@@ -227,9 +237,71 @@ public final class Json {
             throw new IllegalArgumentException("Unterminated JSON string");
         }
 
+        private String parseStructuredValue() {
+            int start = position;
+            ArrayDeque<Character> expectedClosers = new ArrayDeque<>();
+            expectedClosers.push(matchingClose(text.charAt(position++)));
+            boolean inString = false;
+            while (position < text.length()) {
+                char character = text.charAt(position++);
+                if (inString) {
+                    if (character == '\\') {
+                        if (position >= text.length()) {
+                            throw new IllegalArgumentException("Invalid JSON escape");
+                        }
+                        char escaped = text.charAt(position++);
+                        if (escaped == 'u') {
+                            if (position + 4 > text.length()) {
+                                throw new IllegalArgumentException("Invalid unicode escape");
+                            }
+                            position += 4;
+                        }
+                    } else if (character == '"') {
+                        inString = false;
+                    }
+                    continue;
+                }
+                if (character == '"') {
+                    inString = true;
+                    continue;
+                }
+                if (character == '{' || character == '[') {
+                    expectedClosers.push(matchingClose(character));
+                    continue;
+                }
+                if (character == '}' || character == ']') {
+                    if (expectedClosers.isEmpty() || character != expectedClosers.pop()) {
+                        throw new IllegalArgumentException("Mismatched JSON structure");
+                    }
+                    if (expectedClosers.isEmpty()) {
+                        return text.substring(start, position);
+                    }
+                }
+            }
+            throw new IllegalArgumentException("Unterminated JSON value");
+        }
+
+        private boolean matchLiteral(String literal) {
+            if (!text.regionMatches(position, literal, 0, literal.length())) {
+                return false;
+            }
+            int end = position + literal.length();
+            if (end < text.length() && !isValueDelimiter(text.charAt(end))) {
+                return false;
+            }
+            position = end;
+            return true;
+        }
+
         private void skipWhitespace() {
             while (position < text.length() && Character.isWhitespace(text.charAt(position))) {
                 position++;
+            }
+        }
+
+        private void ensureFullyConsumed() {
+            if (position != text.length()) {
+                throw new IllegalArgumentException("Unexpected data after JSON object");
             }
         }
 
@@ -242,6 +314,18 @@ public final class Json {
                 throw new IllegalArgumentException("Expected '" + expected + "'");
             }
             position++;
+        }
+
+        private boolean isValueDelimiter(char character) {
+            return character == ',' || character == '}' || character == ']' || Character.isWhitespace(character);
+        }
+
+        private char matchingClose(char character) {
+            return switch (character) {
+                case '{' -> '}';
+                case '[' -> ']';
+                default -> throw new IllegalArgumentException("Unsupported JSON structure");
+            };
         }
     }
 }

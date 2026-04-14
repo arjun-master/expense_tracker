@@ -78,6 +78,19 @@ final class ExpenseServiceTest {
                 () -> service.create(new CreateExpenseRequest("2026-04-01", "Food", "Cafe", "0", "")),
                 "Zero amount should be rejected"
         );
+        ValidationException scientificNotation = Assertions.throwsType(
+                ValidationException.class,
+                () -> service.create(new CreateExpenseRequest("2026-04-01", "Food", "Cafe", "1e10000000", "")),
+                "Scientific notation should be rejected"
+        );
+        Assertions.contains(scientificNotation.getMessage(), "valid number", "Scientific notation message");
+
+        ValidationException tooLongAmount = Assertions.throwsType(
+                ValidationException.class,
+                () -> service.create(new CreateExpenseRequest("2026-04-01", "Food", "Cafe", "123456789012345678901", "")),
+                "Overly long amounts should be rejected"
+        );
+        Assertions.contains(tooLongAmount.getMessage(), "too long", "Long amount message");
     }
 
     private static final class MemoryExpenseRepository implements ExpenseRepository {

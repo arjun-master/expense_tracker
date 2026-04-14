@@ -66,6 +66,12 @@ final class ExpenseHttpE2ETest {
             HttpResponse<String> badJson = send(client, post(baseUrl + "/api/expenses", "{bad json"));
             Assertions.equals(400, badJson.statusCode(), "Malformed JSON should return 400");
 
+            String largeNotes = "x".repeat(70_000);
+            HttpResponse<String> tooLarge = send(client, post(baseUrl + "/api/expenses",
+                    "{\"date\":\"2026-04-13\",\"category\":\"travel\",\"merchant\":\"Rail Pass\",\"amount\":42.50,\"notes\":\""
+                            + largeNotes + "\"}"));
+            Assertions.equals(413, tooLarge.statusCode(), "Oversized request body should return 413");
+
             HttpResponse<String> deleted = send(client, delete(baseUrl + "/api/expenses/" + id));
             Assertions.equals(204, deleted.statusCode(), "Delete status");
 

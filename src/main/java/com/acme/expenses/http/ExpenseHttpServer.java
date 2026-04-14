@@ -4,11 +4,12 @@ import com.acme.expenses.model.Expense;
 import com.acme.expenses.service.CreateExpenseRequest;
 import com.acme.expenses.service.ExpenseService;
 import com.acme.expenses.service.ValidationException;
-import com.acme.expenses.store.FileExpenseRepository;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +20,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class ExpenseHttpServer implements AutoCloseable {
+    private static final int MAX_REQUEST_BODY_BYTES = 64 * 1024;
+
     private final HttpServer server;
     private final ExecutorService executor;
     private final ExpenseService service;
@@ -82,7 +85,7 @@ public final class ExpenseHttpServer implements AutoCloseable {
                 return;
             }
             if ("POST".equals(method) && "/api/expenses".equals(path)) {
-                Map<String, String> body = Json.parseObject(readBody(exchange));
+                Map<String, String> body = Json.parseObject(readBody(exchange, MAX_REQUEST_BODY_BYTES));
                 Expense expense = service.create(new CreateExpenseRequest(
                         body.get("date"),
                         body.get("category"),
@@ -100,6 +103,8 @@ public final class ExpenseHttpServer implements AutoCloseable {
                 return;
             }
             sendError(exchange, 404, "Route not found");
+        } catch (RequestBodyTooLargeException exception) {
+            sendError(exchange, 413, exception.getMessage());
         } catch (ValidationException | IllegalArgumentException exception) {
             sendError(exchange, 400, exception.getMessage());
         } catch (RuntimeException exception) {
@@ -120,7 +125,7 @@ public final class ExpenseHttpServer implements AutoCloseable {
             sendError(exchange, 405, "Method not allowed");
             return;
         }
-        byte[] bytes = FileExpenseRepository.toCsv(service.list()).getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = csvForExpenses(service.list()).getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "text/csv; charset=utf-8");
         exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"expenses.csv\"");
         securityHeaders(exchange);
@@ -129,12 +134,50 @@ public final class ExpenseHttpServer implements AutoCloseable {
         exchange.close();
     }
 
-    private static String readBody(HttpExchange exchange) {
-        try {
-            return new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+    private static String readBody(HttpExchange exchange, int maxBytes) {
+        try (InputStream input = exchange.getRequestBody();
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int total = 0;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > maxBytes) {
+                    throw new RequestBodyTooLargeException("Request body is too large");
+                }
+                output.write(buffer, 0, read);
+            }
+            return output.toString(StandardCharsets.UTF_8);
         } catch (IOException exception) {
             throw new UncheckedIOException(exception);
         }
+    }
+
+    private static String csvForExpenses(List<Expense> expenses) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("id,date,category,merchant,amount,notes,createdAt");
+        for (Expense expense : expenses) {
+            builder.append(System.lineSeparator())
+                    .append(csvCell(expense.id())).append(',')
+                    .append(csvCell(expense.date().toString())).append(',')
+                    .append(csvCell(expense.category())).append(',')
+                    .append(csvCell(expense.merchant())).append(',')
+                    .append(csvCell(expense.amount().toPlainString())).append(',')
+                    .append(csvCell(expense.notes())).append(',')
+                    .append(csvCell(expense.createdAt().toString()));
+        }
+        return builder.append(System.lineSeparator()).toString();
+    }
+
+    private static String csvCell(String value) {
+        boolean needsQuotes = value.contains(",")
+                || value.contains("\"")
+                || value.contains("\n")
+                || value.contains("\r");
+        if (!needsQuotes) {
+            return value;
+        }
+        return "\"" + value.replace("\"", "\"\"") + "\"";
     }
 
     private static void sendJson(HttpExchange exchange, int status, String body) throws IOException {
@@ -163,5 +206,11 @@ public final class ExpenseHttpServer implements AutoCloseable {
         exchange.getResponseHeaders().set("Content-Security-Policy",
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                         + "img-src 'self' data:; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+    }
+
+    private static final class RequestBodyTooLargeException extends RuntimeException {
+        private RequestBodyTooLargeException(String message) {
+            super(message);
+        }
     }
 }

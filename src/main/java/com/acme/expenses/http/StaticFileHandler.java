@@ -40,10 +40,14 @@ public final class StaticFileHandler implements HttpHandler {
             send(exchange, 404, "text/plain; charset=utf-8", "Not found".getBytes(StandardCharsets.UTF_8));
             return;
         }
-        byte[] bytes = Files.readAllBytes(resolved);
         exchange.getResponseHeaders().set("Cache-Control", "no-cache");
         securityHeaders(exchange);
-        send(exchange, 200, contentType(resolved), bytes);
+        exchange.getResponseHeaders().set("Content-Type", contentType(resolved));
+        exchange.sendResponseHeaders(200, Files.size(resolved));
+        try (var responseBody = exchange.getResponseBody()) {
+            Files.copy(resolved, responseBody);
+        }
+        exchange.close();
     }
 
     private static String contentType(Path path) {

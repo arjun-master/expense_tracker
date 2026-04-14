@@ -21,6 +21,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 public final class ExpenseService {
+    private static final int MAX_AMOUNT_INPUT_LENGTH = 20;
     private static final BigDecimal MAX_AMOUNT = new BigDecimal("10000000.00");
 
     private final ExpenseRepository repository;
@@ -150,8 +151,15 @@ public final class ExpenseService {
         if (value == null || value.isBlank()) {
             throw new ValidationException("Amount is required");
         }
+        String cleaned = value.trim();
+        if (cleaned.length() > MAX_AMOUNT_INPUT_LENGTH) {
+            throw new ValidationException("Amount is too long");
+        }
+        if (cleaned.indexOf('e') >= 0 || cleaned.indexOf('E') >= 0) {
+            throw new ValidationException("Amount must be a valid number");
+        }
         try {
-            BigDecimal amount = new BigDecimal(value.trim()).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal amount = new BigDecimal(cleaned).setScale(2, RoundingMode.HALF_UP);
             if (amount.signum() <= 0) {
                 throw new ValidationException("Amount must be greater than zero");
             }
