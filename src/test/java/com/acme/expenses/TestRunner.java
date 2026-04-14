@@ -10,7 +10,10 @@ public final class TestRunner {
         List<TestCase> tests = List.of(
                 new TestCase("service creates and summarizes expenses", ExpenseServiceTest::createsAndSummarizesExpenses),
                 new TestCase("service rejects invalid expenses", ExpenseServiceTest::rejectsInvalidExpenses),
+                new TestCase("json parses nulls and nested structures", JsonTest::parsesNullValuesAndNestedStructures),
                 new TestCase("file repository persists reloads and deletes", FileExpenseRepositoryTest::persistsReloadsAndDeletesExpenses),
+                new TestCase("file repository coordinates concurrent saves", FileExpenseRepositoryTest::coordinatesConcurrentSavesAcrossRepositoryInstances),
+                new TestCase("file repository cleans up temporary files on failure", FileExpenseRepositoryTest::cleansUpTemporaryFilesWhenWriteAllFails),
                 new TestCase("http end-to-end API flow", ExpenseHttpE2ETest::exercisesApiFlow)
         );
 

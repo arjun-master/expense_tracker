@@ -7,6 +7,7 @@ import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,17 +18,22 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 public final class FileExpenseRepository implements ExpenseRepository {
     private static final String HEADER = "id,date,category,merchant,amount,notes,createdAt";
+    private static final List<String> HEADER_CELLS = List.of("id", "date", "category", "merchant", "amount", "notes", "createdAt");
+    private static final ConcurrentMap<Path, Object> FILE_LOCKS = new ConcurrentHashMap<>();
 
     private final Path file;
     private final Path lockFile;
-    private final Object monitor = new Object();
+    private final Object monitor;
 
     public FileExpenseRepository(Path file) {
-        this.file = Objects.requireNonNull(file, "file");
-        this.lockFile = lockFileFor(file);
+        this.file = Objects.requireNonNull(file, "file").toAbsolutePath().normalize();
+        this.lockFile = lockFileFor(this.file);
+        this.monitor = FILE_LOCKS.computeIfAbsent(this.file, ignored -> new Object());
         initialize();
     }
 
@@ -67,8 +73,15 @@ public final class FileExpenseRepository implements ExpenseRepository {
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            if (Files.notExists(file)) {
-                Files.writeString(file, HEADER + System.lineSeparator(), StandardCharsets.UTF_8);
+            try {
+                Files.writeString(
+                        file,
+                        HEADER + System.lineSeparator(),
+                        StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE_NEW
+                );
+            } catch (FileAlreadyExistsException ignored) {
+                // Another repository instance created the file first.
             }
         } catch (IOException exception) {
             throw new UncheckedIOException("Unable to initialize expense store", exception);
@@ -80,17 +93,16 @@ public final class FileExpenseRepository implements ExpenseRepository {
             if (Files.notExists(file)) {
                 return List.of();
             }
-            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            List<List<String>> rows = parseCsvRows(Files.readString(file, StandardCharsets.UTF_8));
             List<Expense> expenses = new ArrayList<>();
-            for (int i = 0; i < lines.size(); i++) {
-                String line = lines.get(i);
-                if (i == 0 && line.equals(HEADER)) {
+            for (List<String> row : rows) {
+                if (isBlankRow(row)) {
                     continue;
                 }
-                if (line.isBlank()) {
+                if (row.equals(HEADER_CELLS)) {
                     continue;
                 }
-                expenses.add(fromCsvRow(parseCsvLine(line)));
+                expenses.add(fromCsvRow(row));
             }
             return expenses;
         } catch (IOException exception) {
@@ -99,12 +111,20 @@ public final class FileExpenseRepository implements ExpenseRepository {
     }
 
     private void writeAll(List<Expense> expenses) {
+        writeAll(expenses, null);
+    }
+
+    private void writeAll(List<Expense> expenses, Runnable afterTempCreated) {
+        Path temp = null;
         try {
             Path parent = file.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            Path temp = Files.createTempFile(parent == null ? Path.of(".") : parent, "expenses-", ".csv");
+            temp = Files.createTempFile(parent == null ? Path.of(".") : parent, "expenses-", ".csv");
+            if (afterTempCreated != null) {
+                afterTempCreated.run();
+            }
             List<String> lines = new ArrayList<>();
             lines.add(HEADER);
             for (Expense expense : expenses) {
@@ -118,6 +138,14 @@ public final class FileExpenseRepository implements ExpenseRepository {
             }
         } catch (IOException exception) {
             throw new UncheckedIOException("Unable to write expenses", exception);
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException cleanupFailure) {
+                    // Preserve the primary failure, if there was one.
+                }
+            }
         }
     }
 
@@ -188,15 +216,16 @@ public final class FileExpenseRepository implements ExpenseRepository {
         return "\"" + value.replace("\"", "\"\"") + "\"";
     }
 
-    private static List<String> parseCsvLine(String line) {
-        List<String> cells = new ArrayList<>();
+    private static List<List<String>> parseCsvRows(String content) {
+        List<List<String>> rows = new ArrayList<>();
+        List<String> currentRow = new ArrayList<>();
         StringBuilder current = new StringBuilder();
         boolean quoted = false;
-        for (int i = 0; i < line.length(); i++) {
-            char character = line.charAt(i);
+        for (int i = 0; i < content.length(); i++) {
+            char character = content.charAt(i);
             if (quoted) {
                 if (character == '"') {
-                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    if (i + 1 < content.length() && content.charAt(i + 1) == '"') {
                         current.append('"');
                         i++;
                     } else {
@@ -205,17 +234,43 @@ public final class FileExpenseRepository implements ExpenseRepository {
                 } else {
                     current.append(character);
                 }
-            } else if (character == '"') {
-                quoted = true;
-            } else if (character == ',') {
-                cells.add(current.toString());
-                current.setLength(0);
             } else {
-                current.append(character);
+                if (character == '"') {
+                    if (current.length() != 0) {
+                        throw new IllegalStateException("Unexpected quote in CSV row");
+                    }
+                    quoted = true;
+                } else if (character == ',') {
+                    currentRow.add(current.toString());
+                    current.setLength(0);
+                } else if (character == '\n') {
+                    currentRow.add(current.toString());
+                    rows.add(currentRow);
+                    currentRow = new ArrayList<>();
+                    current.setLength(0);
+                } else if (character == '\r') {
+                    currentRow.add(current.toString());
+                    rows.add(currentRow);
+                    currentRow = new ArrayList<>();
+                    current.setLength(0);
+                    if (i + 1 < content.length() && content.charAt(i + 1) == '\n') {
+                        i++;
+                    }
+                } else {
+                    current.append(character);
+                }
             }
         }
-        cells.add(current.toString());
-        return cells;
+        if (quoted) {
+            throw new IllegalStateException("Unterminated quoted CSV row");
+        }
+        currentRow.add(current.toString());
+        rows.add(currentRow);
+        return rows;
+    }
+
+    private static boolean isBlankRow(List<String> row) {
+        return row.size() == 1 && row.get(0).isBlank();
     }
 
     private static Path lockFileFor(Path file) {
