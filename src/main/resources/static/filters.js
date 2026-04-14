@@ -18,6 +18,7 @@
     resultCount: null,
     resultTotal: null,
   };
+  let pendingData = null;
 
   function injectStylesheet() {
     if (document.getElementById(STYLE_ID)) return;
@@ -269,10 +270,10 @@
 
     body.className = 'feature-panel-body expense-filters';
 
-	    const description = document.createElement('p');
-	    description.className = 'expense-filters-copy';
-	    description.textContent = 'Find the transactions that matter now.';
-	    body.appendChild(description);
+    const description = document.createElement('p');
+    description.className = 'expense-filters-copy';
+    description.textContent = 'Find the transactions that matter now.';
+    body.appendChild(description);
 
     const form = document.createElement('form');
     form.className = 'expense-filters-form';
@@ -382,13 +383,28 @@
     }
 
     syncCategoryOptions(state.expenses);
-    renderFilteredExpenses();
   }
 
   function syncFromData(expenses) {
     state.expenses = Array.isArray(expenses) ? expenses.slice() : [];
     syncCategoryOptions(state.expenses);
     renderFilteredExpenses();
+  }
+
+  function hydrateInitialData() {
+    if (pendingData) {
+      state.summary = pendingData.summary || null;
+      syncFromData(pendingData.expenses);
+      return true;
+    }
+
+    if (window.expenseLedger.state && window.expenseLedger.state.loading === false) {
+      state.summary = window.expenseLedger.state.summary || null;
+      syncFromData(window.expenseLedger.state.expenses || []);
+      return true;
+    }
+
+    return false;
   }
 
   function initFeature() {
@@ -399,13 +415,14 @@
     injectStylesheet();
     state.panel = window.expenseLedger.registerFeaturePanel(FEATURE_ID, 'Advanced filtering and sorting', 'Analysis');
     buildPanelBody(state.panel);
-    syncFromData(window.expenseLedger.state?.expenses || []);
 
     document.addEventListener('expense-ledger:data', (event) => {
+      pendingData = event?.detail || null;
       const detailExpenses = event?.detail?.expenses;
       const currentExpenses = Array.isArray(detailExpenses)
         ? detailExpenses
         : window.expenseLedger?.state?.expenses || [];
+      state.summary = event?.detail?.summary || null;
       syncFromData(currentExpenses);
     });
 
@@ -413,6 +430,8 @@
       apply: renderFilteredExpenses,
       reset: resetFilters,
     };
+
+    hydrateInitialData();
 
     return true;
   }

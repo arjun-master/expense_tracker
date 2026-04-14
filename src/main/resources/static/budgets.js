@@ -70,6 +70,10 @@
     }
   }
 
+  function isPlainRecord(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
   function readStore() {
     if (!storageAvailable()) {
       return storageFallback;
@@ -79,7 +83,7 @@
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) return {};
       const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed : {};
+      return isPlainRecord(parsed) ? parsed : {};
     } catch {
       return {};
     }
@@ -97,7 +101,7 @@
   function loadMonthBudgets(monthKey) {
     const store = readStore();
     const monthBudgets = store[monthKey];
-    if (!monthBudgets || typeof monthBudgets !== 'object') {
+    if (!isPlainRecord(monthBudgets)) {
       return {};
     }
     return monthBudgets;

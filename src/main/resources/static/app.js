@@ -5,6 +5,8 @@ const appState = {
   submitting: false,
 };
 
+const pendingDeleteIds = new Set();
+
 const palette = [
   '#167d86',
   '#2f8f61',
@@ -350,8 +352,10 @@ async function loadData(options = {}) {
 
     appState.expenses = Array.isArray(expensesResponse?.expenses) ? expensesResponse.expenses : [];
     appState.summary = summaryResponse || summaryFromExpenses(appState.expenses);
-    renderExpenses(appState.expenses);
     syncSummary();
+    if (!(window.expenseLedgerFilters && typeof window.expenseLedgerFilters.apply === 'function')) {
+      renderExpenses(appState.expenses);
+    }
     publishDataState();
     if (!silent) {
       setToast('Dashboard refreshed');
@@ -359,8 +363,10 @@ async function loadData(options = {}) {
   } catch (error) {
     failed = true;
     appState.summary = summaryFromExpenses(appState.expenses);
-    renderExpenses(appState.expenses);
     syncSummary();
+    if (!(window.expenseLedgerFilters && typeof window.expenseLedgerFilters.apply === 'function')) {
+      renderExpenses(appState.expenses);
+    }
     publishDataState();
     if (!silent) {
       setToast(error.message || 'Unable to load data', 'error');
@@ -431,6 +437,11 @@ async function submitExpense(event) {
 }
 
 async function deleteExpense(id) {
+  if (pendingDeleteIds.has(id)) {
+    return;
+  }
+
+  pendingDeleteIds.add(id);
   try {
     nodes.updateState.textContent = 'Deleting expense';
     await fetchJson(`/api/expenses/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -438,6 +449,8 @@ async function deleteExpense(id) {
     await loadData({ silent: true });
   } catch (error) {
     setToast(error.message || 'Unable to delete expense', 'error');
+  } finally {
+    pendingDeleteIds.delete(id);
   }
 }
 
@@ -445,15 +458,23 @@ function handleTableClick(event) {
   const button = event.target.closest('[data-delete-id]');
   if (!button) return;
   const { deleteId } = button.dataset;
-  if (!deleteId) return;
+  if (!deleteId || pendingDeleteIds.has(deleteId)) return;
 
   const row = button.closest('tr');
+  const previousDisabled = button.disabled;
+  const previousLabel = button.textContent;
+
   if (row) {
     row.classList.add('skeleton');
     row.style.opacity = '0.7';
   }
 
+  button.disabled = true;
+  button.textContent = 'Deleting';
+
   deleteExpense(deleteId).finally(() => {
+    button.disabled = previousDisabled;
+    button.textContent = previousLabel;
     if (row) {
       row.classList.remove('skeleton');
       row.style.opacity = '';
