@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+rm -rf build
+mkdir -p build/classes build/test-classes
+
+find src/main/java -name '*.java' | sort > build/main-sources.txt
+javac --release 21 -d build/classes @build/main-sources.txt
+
+find src/test/java -name '*.java' | sort > build/test-sources.txt
+javac --release 21 -cp build/classes -d build/test-classes @build/test-sources.txt
+
+java -cp build/classes:build/test-classes com.acme.expenses.TestRunner
